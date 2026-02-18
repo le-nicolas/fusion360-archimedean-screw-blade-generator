@@ -71,6 +71,41 @@ def _axis_projection(origin: adsk.core.Point3D, axis: adsk.core.Vector3D, point:
     return vec.dotProduct(axis)
 
 
+def _point_offset(point: adsk.core.Point3D, direction: adsk.core.Vector3D, distance: float) -> adsk.core.Point3D:
+    return adsk.core.Point3D.create(
+        point.x + direction.x * distance,
+        point.y + direction.y * distance,
+        point.z + direction.z * distance,
+    )
+
+
+def _vector_between_points(p1: adsk.core.Point3D, p2: adsk.core.Point3D) -> adsk.core.Vector3D:
+    return adsk.core.Vector3D.create(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z)
+
+
+def _safe_perpendicular(axis: adsk.core.Vector3D) -> adsk.core.Vector3D:
+    x_axis = adsk.core.Vector3D.create(1, 0, 0)
+    y_axis = adsk.core.Vector3D.create(0, 1, 0)
+    perp = axis.crossProduct(x_axis)
+    if perp.length < 1e-6:
+        perp = axis.crossProduct(y_axis)
+    perp.normalize()
+    return perp
+
+
+def _vector_linear_combo(
+    v1: adsk.core.Vector3D,
+    s1: float,
+    v2: adsk.core.Vector3D,
+    s2: float,
+) -> adsk.core.Vector3D:
+    return adsk.core.Vector3D.create(
+        v1.x * s1 + v2.x * s2,
+        v1.y * s1 + v2.y * s2,
+        v1.z * s1 + v2.z * s2,
+    )
+
+
 def _auto_detect_start_end_face(
     shaft_face: adsk.fusion.BRepFace,
     cylinder: adsk.core.Cylinder,
@@ -116,7 +151,7 @@ def _auto_detect_start_end_face(
     )
 
 
-def _get_validated_parameters(inputs: adsk.core.CommandInputs):
+def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: bool = False):
     shaft_entity = _selection_entity(inputs, INPUT_SHAFT_FACE)
     if not shaft_entity:
         raise ValueError('Select the cylindrical shaft face.')
@@ -136,6 +171,38 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs):
     start_end_name = start_end_input.selectedItem.name if start_end_input and start_end_input.selectedItem else START_END_MIN
     prefer_max_end = start_end_name == START_END_MAX
     start_planar_entity = _auto_detect_start_end_face(shaft_face, cylinder, prefer_max_end)
+    start_plane = adsk.core.Plane.cast(start_planar_entity.geometry)
+    if not start_plane:
+        raise ValueError('Auto-detected shaft end is not planar.')
+
+    axis = cylinder.axis.copy()
+    axis.normalize()
+    axis_origin = cylinder.origin.copy()
+
+    axis_direction = axis.copy()
+    if prefer_max_end:
+        axis_direction.scaleBy(-1.0)
+
+    start_normal = start_plane.normal.copy()
+    start_normal.normalize()
+    offset_sign = 1.0 if start_normal.dotProduct(axis_direction) >= 0.0 else -1.0
+
+    start_scalar = _axis_projection(axis_origin, axis, start_planar_entity.pointOnFace)
+    start_center = _point_offset(axis_origin, axis, start_scalar)
+
+    shaft_point = shaft_face.pointOnFace
+    shaft_scalar = _axis_projection(axis_origin, axis, shaft_point)
+    shaft_axis_point = _point_offset(axis_origin, axis, shaft_scalar)
+    basis_u = _vector_between_points(shaft_axis_point, shaft_point)
+    if basis_u.length < 1e-6:
+        basis_u = _safe_perpendicular(axis)
+    else:
+        basis_u.normalize()
+    basis_v = axis_direction.crossProduct(basis_u)
+    if basis_v.length < 1e-6:
+        basis_u = _safe_perpendicular(axis_direction)
+        basis_v = axis_direction.crossProduct(basis_u)
+    basis_v.normalize()
 
     length_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_LENGTH))
     outer_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_OUTER_RADIUS))
@@ -179,11 +246,23 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs):
     join_to_shaft = operation_name == OP_JOIN
 
     station_count = max(2, int(math.ceil(turns * segments_per_turn)) + 1)
+    preview_segment_cap = 8
+    preview_flights = flights
+    if preview_mode:
+        preview_station_count = max(2, int(math.ceil(turns * min(segments_per_turn, preview_segment_cap))) + 1)
+        station_count = min(station_count, preview_station_count)
+        join_to_shaft = False
+        preview_flights = min(flights, 2)
 
     return {
         'component': component,
         'shaftBody': shaft_face.body,
         'startPlanarEntity': start_planar_entity,
+        'startCenter': start_center,
+        'axisDirection': axis_direction,
+        'basisU': basis_u,
+        'basisV': basis_v,
+        'offsetSign': offset_sign,
         'innerRadius': inner_radius,
         'outerRadius': outer_radius,
         'length': length,
@@ -191,17 +270,23 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs):
         'thickness': thickness,
         'startAngle': start_angle,
         'handedSign': handed_sign,
-        'flights': flights,
+        'flights': preview_flights,
         'segmentsPerTurn': segments_per_turn,
         'stationCount': station_count,
         'joinToShaft': join_to_shaft,
+        'isPreview': preview_mode,
     }
 
 
 def _add_profile_section(
     component: adsk.fusion.Component,
     base_entity,
-    distance: float,
+    plane_offset_distance: float,
+    axis_distance: float,
+    start_center: adsk.core.Point3D,
+    axis_direction: adsk.core.Vector3D,
+    basis_u: adsk.core.Vector3D,
+    basis_v: adsk.core.Vector3D,
     inner_radius: float,
     outer_radius: float,
     thickness: float,
@@ -209,7 +294,7 @@ def _add_profile_section(
 ):
     planes = component.constructionPlanes
     plane_input = planes.createInput()
-    plane_input.setByOffset(base_entity, adsk.core.ValueInput.createByReal(distance))
+    plane_input.setByOffset(base_entity, adsk.core.ValueInput.createByReal(plane_offset_distance))
     section_plane = planes.add(plane_input)
     section_plane.isLightBulbOn = False
 
@@ -219,22 +304,21 @@ def _add_profile_section(
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
 
-    radial_x = cos_a
-    radial_y = sin_a
-    tangential_x = -sin_a
-    tangential_y = cos_a
+    center = _point_offset(start_center, axis_direction, axis_distance)
+    radial = _vector_linear_combo(basis_u, cos_a, basis_v, sin_a)
+    radial.normalize()
+    tangential = axis_direction.crossProduct(radial)
+    tangential.normalize()
 
     half_t = thickness / 2.0
 
-    inner_x = inner_radius * radial_x
-    inner_y = inner_radius * radial_y
-    outer_x = outer_radius * radial_x
-    outer_y = outer_radius * radial_y
+    inner_center = _point_offset(center, radial, inner_radius)
+    outer_center = _point_offset(center, radial, outer_radius)
 
-    p1 = adsk.core.Point3D.create(inner_x + tangential_x * half_t, inner_y + tangential_y * half_t, 0)
-    p2 = adsk.core.Point3D.create(outer_x + tangential_x * half_t, outer_y + tangential_y * half_t, 0)
-    p3 = adsk.core.Point3D.create(outer_x - tangential_x * half_t, outer_y - tangential_y * half_t, 0)
-    p4 = adsk.core.Point3D.create(inner_x - tangential_x * half_t, inner_y - tangential_y * half_t, 0)
+    p1 = _point_offset(inner_center, tangential, half_t)
+    p2 = _point_offset(outer_center, tangential, half_t)
+    p3 = _point_offset(outer_center, tangential, -half_t)
+    p4 = _point_offset(inner_center, tangential, -half_t)
 
     lines = sketch.sketchCurves.sketchLines
     lines.addByTwoPoints(p1, p2)
@@ -258,13 +342,19 @@ def _create_single_flight(component: adsk.fusion.Component, params: dict, phase_
     section_count = params['stationCount']
     for i in range(section_count):
         t = i / float(section_count - 1)
-        distance = params['length'] * t
+        axis_distance = params['length'] * t
+        plane_offset_distance = axis_distance * params['offsetSign']
         angle = phase_angle + params['handedSign'] * (2.0 * math.pi * params['turns'] * t)
 
         profile = _add_profile_section(
             params['component'],
             params['startPlanarEntity'],
-            distance,
+            plane_offset_distance,
+            axis_distance,
+            params['startCenter'],
+            params['axisDirection'],
+            params['basisU'],
+            params['basisV'],
             params['innerRadius'],
             params['outerRadius'],
             params['thickness'],
@@ -351,7 +441,7 @@ class CommandPreviewHandler(adsk.core.CommandEventHandler):
         try:
             command = args.firingEvent.sender
             inputs = command.commandInputs
-            params = _get_validated_parameters(inputs)
+            params = _get_validated_parameters(inputs, preview_mode=True)
             _build_blades(params)
             args.isValidResult = True
         except Exception:
