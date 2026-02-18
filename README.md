@@ -8,10 +8,11 @@ Then I got stuck on the blade, because the blade is the math-heavy part of an Ar
 This add-in exists so that part is no longer a manual sketch nightmare.
 
 ## What this add-in does
-- Builds configurable Archimedean screw blade geometry around an existing shaft.
+- Builds configurable hydraulic Archimedean screw flight geometry around an existing shaft.
 - Auto-detects the start plane from shaft end geometry, so you only select the shaft once.
 - Shows a live preview while editing.
 - Includes a draggable `Turns (drag)` slider for fast tuning.
+- Includes a draggable `Bucket Wrap (drag)` slider to tune the hydraulic bucket cup.
 - Supports `New Body` or direct `Join` into your shaft.
 
 ## Configurable parameters
@@ -22,10 +23,10 @@ This add-in exists so that part is no longer a manual sketch nightmare.
 - `Start End` (auto-detected end-cap choice)
 - `Blade Thickness`
 - `Hub Clearance`
+- `Bucket Wrap (deg)` + drag slider
 - `Start Angle`
 - `Handedness` (left/right)
 - `Flights` (multi-start screw)
-- `Segments / Turn` (smoothness)
 
 ## Installation
 1. Open Fusion 360.

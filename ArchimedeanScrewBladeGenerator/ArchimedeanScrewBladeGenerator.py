@@ -8,26 +8,27 @@ APP = adsk.core.Application.get()
 UI = APP.userInterface if APP else None
 
 ADDIN_NAME = 'Archimedean Screw Blade Generator'
-CMD_ID = 'archimedean_screw_blade_generator_cmd'
+CMD_ID = 'archimedean_screw_blade_generator_cmd_v3'
 CMD_NAME = 'Archimedean Screw Blade'
-CMD_DESCRIPTION = 'Create configurable Archimedean screw blades around an existing shaft.'
+CMD_DESCRIPTION = 'Create a configurable hydraulic Archimedean screw flight around an existing shaft.'
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = 'SolidCreatePanel'
 RESOURCE_FOLDER = os.path.join(os.path.dirname(__file__), 'resources')
 
 INPUT_SHAFT_FACE = 'shaftFace'
+INPUT_START_END = 'startEnd'
 INPUT_OUTER_RADIUS = 'outerRadius'
 INPUT_LENGTH = 'bladeLength'
 INPUT_TURNS = 'turns'
 INPUT_TURNS_SLIDER = 'turnsSlider'
 INPUT_THICKNESS = 'bladeThickness'
 INPUT_CLEARANCE = 'hubClearance'
+INPUT_BUCKET_WRAP = 'bucketWrapDeg'
+INPUT_BUCKET_WRAP_SLIDER = 'bucketWrapSlider'
 INPUT_START_ANGLE = 'startAngle'
 INPUT_HANDEDNESS = 'handedness'
 INPUT_FLIGHTS = 'flights'
-INPUT_SEGMENTS = 'segmentsPerTurn'
 INPUT_OPERATION = 'operation'
-INPUT_START_END = 'startEnd'
 INPUT_DERIVED = 'derivedInfo'
 
 HAND_RIGHT = 'Right-handed'
@@ -106,6 +107,18 @@ def _vector_linear_combo(
     )
 
 
+def _unit_direction_from_angle(
+    basis_u: adsk.core.Vector3D,
+    basis_v: adsk.core.Vector3D,
+    angle: float,
+) -> adsk.core.Vector3D:
+    direction = _vector_linear_combo(basis_u, math.cos(angle), basis_v, math.sin(angle))
+    if direction.length < 1e-9:
+        raise ValueError('Could not resolve shaft basis vectors for helical direction.')
+    direction.normalize()
+    return direction
+
+
 def _auto_detect_start_end_face(
     shaft_face: adsk.fusion.BRepFace,
     cylinder: adsk.core.Cylinder,
@@ -117,11 +130,9 @@ def _auto_detect_start_end_face(
 
     candidate_faces = []
     seen_temp_ids = set()
-    edges = shaft_face.edges
-    for edge in edges:
-        edge_faces = edge.faces
-        for i in range(edge_faces.count):
-            face = edge_faces.item(i)
+    for edge in shaft_face.edges:
+        for i in range(edge.faces.count):
+            face = edge.faces.item(i)
             if face == shaft_face:
                 continue
             if face.tempId in seen_temp_ids:
@@ -141,14 +152,147 @@ def _auto_detect_start_end_face(
 
     if not candidate_faces:
         raise ValueError(
-            'Unable to auto-detect shaft end face. Make sure the shaft has planar end caps connected to the selected cylindrical face.'
+            'Unable to auto-detect shaft end face. Ensure planar shaft end caps touch the selected cylindrical face.'
         )
 
     selector = max if prefer_max_end else min
-    return selector(
-        candidate_faces,
-        key=lambda f: _axis_projection(axis_origin, axis, f.pointOnFace),
+    return selector(candidate_faces, key=lambda f: _axis_projection(axis_origin, axis, f.pointOnFace))
+
+
+def _persist_temp_body(component: adsk.fusion.Component, temp_body: adsk.fusion.BRepBody, name: str):
+    design = _active_design()
+    if design and design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+        base_feature = component.features.baseFeatures.add()
+        base_feature.name = name
+        base_feature.startEdit()
+        source_body = component.bRepBodies.add(temp_body, base_feature)
+        base_feature.finishEdit()
+        if not source_body or base_feature.bodies.count < 1:
+            raise RuntimeError('Failed to add temporary body to parametric component.')
+        return base_feature.bodies.item(base_feature.bodies.count - 1)
+
+    body = component.bRepBodies.add(temp_body)
+    if not body:
+        raise RuntimeError('Failed to add temporary body to component.')
+    body.name = name
+    return body
+
+
+def _create_helix_wire_body(
+    temp_mgr: adsk.fusion.TemporaryBRepManager,
+    axis_point: adsk.core.Point3D,
+    axis_vector: adsk.core.Vector3D,
+    start_point: adsk.core.Point3D,
+    pitch: float,
+    turns: float,
+    handed_sign: float,
+):
+    helix = temp_mgr.createHelixWire(axis_point, axis_vector, start_point, pitch, turns * handed_sign, 0.0)
+    if helix:
+        return helix
+
+    helix = temp_mgr.createHelixWire(axis_point, axis_vector, start_point, pitch * handed_sign, turns, 0.0)
+    if helix:
+        return helix
+
+    flipped_axis = axis_vector.copy()
+    flipped_axis.scaleBy(-1.0)
+    return temp_mgr.createHelixWire(axis_point, flipped_axis, start_point, pitch, turns, 0.0)
+
+
+def _create_bucket_surface_temp_body(params: dict, phase_angle: float):
+    temp_mgr = adsk.fusion.TemporaryBRepManager.get()
+    pitch = params['length'] / params['turns']
+
+    inner_phase = phase_angle
+    outer_phase = phase_angle + params['handedSign'] * params['bucketWrap']
+
+    inner_dir = _unit_direction_from_angle(params['basisU'], params['basisV'], inner_phase)
+    outer_dir = _unit_direction_from_angle(params['basisU'], params['basisV'], outer_phase)
+
+    inner_start = _point_offset(params['startCenter'], inner_dir, params['innerRadius'])
+    outer_start = _point_offset(params['startCenter'], outer_dir, params['outerRadius'])
+
+    inner_wire_body = _create_helix_wire_body(
+        temp_mgr,
+        params['startCenter'],
+        params['axisDirection'],
+        inner_start,
+        pitch,
+        params['turns'],
+        params['handedSign'],
     )
+    outer_wire_body = _create_helix_wire_body(
+        temp_mgr,
+        params['startCenter'],
+        params['axisDirection'],
+        outer_start,
+        pitch,
+        params['turns'],
+        params['handedSign'],
+    )
+
+    if not inner_wire_body or inner_wire_body.wires.count < 1:
+        raise RuntimeError('Failed to build the inner helical guide wire.')
+    if not outer_wire_body or outer_wire_body.wires.count < 1:
+        raise RuntimeError('Failed to build the outer helical guide wire.')
+
+    surface_body = temp_mgr.createRuledSurface(inner_wire_body.wires.item(0), outer_wire_body.wires.item(0))
+    if not surface_body:
+        raise RuntimeError('Failed to create ruled surface between helical guides.')
+
+    return surface_body
+
+
+def _thicken_surface_body(component: adsk.fusion.Component, surface_body: adsk.fusion.BRepBody, thickness: float):
+    entities = adsk.core.ObjectCollection.create()
+    entities.add(surface_body)
+
+    thicken_features = component.features.thickenFeatures
+    thicken_input = thicken_features.createInput(
+        entities,
+        adsk.core.ValueInput.createByReal(thickness),
+        True,
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
+    )
+    thicken_input.isChainSelection = False
+
+    thicken_feature = thicken_features.add(thicken_input)
+    if thicken_feature.bodies.count < 1:
+        raise RuntimeError('Thicken failed to create a solid blade body.')
+
+    try:
+        surface_body.deleteMe()
+    except Exception:
+        try:
+            surface_body.isLightBulbOn = False
+        except Exception:
+            pass
+
+    blade_body = thicken_feature.bodies.item(0)
+    blade_body.name = 'Archimedean Flight'
+    return blade_body
+
+
+def _create_single_flight(component: adsk.fusion.Component, params: dict, phase_angle: float):
+    surface_temp = _create_bucket_surface_temp_body(params, phase_angle)
+    surface_body = _persist_temp_body(component, surface_temp, 'Archimedean Flight Surface')
+    return _thicken_surface_body(component, surface_body, params['thickness'])
+
+
+def _join_bodies(component: adsk.fusion.Component, target_body: adsk.fusion.BRepBody, tool_bodies):
+    if not tool_bodies:
+        return target_body
+
+    tools = adsk.core.ObjectCollection.create()
+    for body in tool_bodies:
+        tools.add(body)
+
+    combine_input = component.features.combineFeatures.createInput(target_body, tools)
+    combine_input.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
+    combine_input.isKeepToolBodies = False
+    component.features.combineFeatures.add(combine_input)
+    return target_body
 
 
 def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: bool = False):
@@ -159,21 +303,20 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     shaft_face = adsk.fusion.BRepFace.cast(shaft_entity)
     if not shaft_face:
         raise ValueError('Shaft selection must be a face.')
-
     if shaft_face.assemblyContext:
-        raise ValueError('Assembly occurrences are not supported. Select entities in their source component.')
+        raise ValueError('Assembly occurrence selections are not supported. Select source-component geometry.')
 
     cylinder = adsk.core.Cylinder.cast(shaft_face.geometry)
     if not cylinder:
         raise ValueError('Selected shaft face must be cylindrical.')
+
     component = shaft_face.body.parentComponent
+
     start_end_input = adsk.core.DropDownCommandInput.cast(inputs.itemById(INPUT_START_END))
     start_end_name = start_end_input.selectedItem.name if start_end_input and start_end_input.selectedItem else START_END_MIN
     prefer_max_end = start_end_name == START_END_MAX
-    start_planar_entity = _auto_detect_start_end_face(shaft_face, cylinder, prefer_max_end)
-    start_plane = adsk.core.Plane.cast(start_planar_entity.geometry)
-    if not start_plane:
-        raise ValueError('Auto-detected shaft end is not planar.')
+
+    start_planar_face = _auto_detect_start_end_face(shaft_face, cylinder, prefer_max_end)
 
     axis = cylinder.axis.copy()
     axis.normalize()
@@ -183,11 +326,7 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     if prefer_max_end:
         axis_direction.scaleBy(-1.0)
 
-    start_normal = start_plane.normal.copy()
-    start_normal.normalize()
-    offset_sign = 1.0 if start_normal.dotProduct(axis_direction) >= 0.0 else -1.0
-
-    start_scalar = _axis_projection(axis_origin, axis, start_planar_entity.pointOnFace)
+    start_scalar = _axis_projection(axis_origin, axis, start_planar_face.pointOnFace)
     start_center = _point_offset(axis_origin, axis, start_scalar)
 
     shaft_point = shaft_face.pointOnFace
@@ -195,7 +334,7 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     shaft_axis_point = _point_offset(axis_origin, axis, shaft_scalar)
     basis_u = _vector_between_points(shaft_axis_point, shaft_point)
     if basis_u.length < 1e-6:
-        basis_u = _safe_perpendicular(axis)
+        basis_u = _safe_perpendicular(axis_direction)
     else:
         basis_u.normalize()
     basis_v = axis_direction.crossProduct(basis_u)
@@ -210,7 +349,7 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     clearance_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_CLEARANCE))
     start_angle_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_START_ANGLE))
     turns_input = adsk.core.FloatSpinnerCommandInput.cast(inputs.itemById(INPUT_TURNS))
-    segments_input = adsk.core.IntegerSpinnerCommandInput.cast(inputs.itemById(INPUT_SEGMENTS))
+    bucket_wrap_input = adsk.core.FloatSpinnerCommandInput.cast(inputs.itemById(INPUT_BUCKET_WRAP))
     flights_input = adsk.core.IntegerSpinnerCommandInput.cast(inputs.itemById(INPUT_FLIGHTS))
     hand_input = adsk.core.DropDownCommandInput.cast(inputs.itemById(INPUT_HANDEDNESS))
     operation_input = adsk.core.DropDownCommandInput.cast(inputs.itemById(INPUT_OPERATION))
@@ -221,7 +360,7 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     clearance = clearance_input.value
     start_angle = start_angle_input.value
     turns = turns_input.value
-    segments_per_turn = segments_input.value
+    bucket_wrap_deg = bucket_wrap_input.value
     flights = flights_input.value
 
     if length <= 0:
@@ -230,14 +369,16 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
         raise ValueError('Turns must be greater than zero.')
     if thickness <= 0:
         raise ValueError('Blade thickness must be greater than zero.')
-    if segments_per_turn < 8:
-        raise ValueError('Use at least 8 segments per turn.')
+    if clearance < 0:
+        raise ValueError('Hub clearance cannot be negative.')
     if flights < 1:
         raise ValueError('Flights must be at least 1.')
+    if bucket_wrap_deg < 0 or bucket_wrap_deg > 120:
+        raise ValueError('Bucket wrap must be between 0 and 120 degrees.')
 
     inner_radius = cylinder.radius + clearance
     if outer_radius <= inner_radius:
-        raise ValueError('Outer radius must be greater than shaft radius + clearance.')
+        raise ValueError('Outer radius must be greater than shaft radius + hub clearance.')
 
     handedness = hand_input.selectedItem.name if hand_input and hand_input.selectedItem else HAND_RIGHT
     handed_sign = 1.0 if handedness == HAND_RIGHT else -1.0
@@ -245,151 +386,29 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     operation_name = operation_input.selectedItem.name if operation_input and operation_input.selectedItem else OP_NEW_BODY
     join_to_shaft = operation_name == OP_JOIN
 
-    station_count = max(2, int(math.ceil(turns * segments_per_turn)) + 1)
-    preview_segment_cap = 3
     preview_flights = flights
     if preview_mode:
-        preview_station_count = max(2, int(math.ceil(turns * min(segments_per_turn, preview_segment_cap))) + 1)
-        station_count = min(station_count, preview_station_count)
-        join_to_shaft = False
         preview_flights = min(flights, 2)
+        join_to_shaft = False
 
     return {
         'component': component,
         'shaftBody': shaft_face.body,
-        'startPlanarEntity': start_planar_entity,
         'startCenter': start_center,
         'axisDirection': axis_direction,
         'basisU': basis_u,
         'basisV': basis_v,
-        'offsetSign': offset_sign,
         'innerRadius': inner_radius,
         'outerRadius': outer_radius,
         'length': length,
         'turns': turns,
         'thickness': thickness,
         'startAngle': start_angle,
+        'bucketWrap': math.radians(bucket_wrap_deg),
         'handedSign': handed_sign,
         'flights': preview_flights,
-        'segmentsPerTurn': segments_per_turn,
-        'stationCount': station_count,
         'joinToShaft': join_to_shaft,
-        'isPreview': preview_mode,
     }
-
-
-def _add_profile_section(
-    component: adsk.fusion.Component,
-    base_entity,
-    plane_offset_distance: float,
-    axis_distance: float,
-    start_center: adsk.core.Point3D,
-    axis_direction: adsk.core.Vector3D,
-    basis_u: adsk.core.Vector3D,
-    basis_v: adsk.core.Vector3D,
-    inner_radius: float,
-    outer_radius: float,
-    thickness: float,
-    angle: float,
-):
-    planes = component.constructionPlanes
-    plane_input = planes.createInput()
-    plane_input.setByOffset(base_entity, adsk.core.ValueInput.createByReal(plane_offset_distance))
-    section_plane = planes.add(plane_input)
-    section_plane.isLightBulbOn = False
-
-    sketch = component.sketches.add(section_plane)
-    sketch.isLightBulbOn = False
-
-    cos_a = math.cos(angle)
-    sin_a = math.sin(angle)
-
-    center = _point_offset(start_center, axis_direction, axis_distance)
-    radial = _vector_linear_combo(basis_u, cos_a, basis_v, sin_a)
-    radial.normalize()
-    tangential = axis_direction.crossProduct(radial)
-    tangential.normalize()
-
-    half_t = thickness / 2.0
-
-    inner_center = _point_offset(center, radial, inner_radius)
-    outer_center = _point_offset(center, radial, outer_radius)
-
-    p1 = _point_offset(inner_center, tangential, half_t)
-    p2 = _point_offset(outer_center, tangential, half_t)
-    p3 = _point_offset(outer_center, tangential, -half_t)
-    p4 = _point_offset(inner_center, tangential, -half_t)
-
-    # Sketch lines require sketch-space coordinates; using model-space points directly
-    # distorts profiles when the sketch plane is not aligned to world axes.
-    p1s = sketch.modelToSketchSpace(p1)
-    p2s = sketch.modelToSketchSpace(p2)
-    p3s = sketch.modelToSketchSpace(p3)
-    p4s = sketch.modelToSketchSpace(p4)
-
-    lines = sketch.sketchCurves.sketchLines
-    lines.addByTwoPoints(p1s, p2s)
-    lines.addByTwoPoints(p2s, p3s)
-    lines.addByTwoPoints(p3s, p4s)
-    lines.addByTwoPoints(p4s, p1s)
-
-    if sketch.profiles.count < 1:
-        raise RuntimeError('Failed to create section profile. Try increasing blade thickness.')
-
-    return sketch.profiles.item(0)
-
-
-def _create_single_flight(component: adsk.fusion.Component, params: dict, phase_angle: float):
-    loft_features = component.features.loftFeatures
-    loft_input = loft_features.createInput(adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-    loft_input.isSolid = True
-
-    sections = loft_input.loftSections
-
-    section_count = params['stationCount']
-    for i in range(section_count):
-        t = i / float(section_count - 1)
-        axis_distance = params['length'] * t
-        plane_offset_distance = axis_distance * params['offsetSign']
-        angle = phase_angle + params['handedSign'] * (2.0 * math.pi * params['turns'] * t)
-
-        profile = _add_profile_section(
-            params['component'],
-            params['startPlanarEntity'],
-            plane_offset_distance,
-            axis_distance,
-            params['startCenter'],
-            params['axisDirection'],
-            params['basisU'],
-            params['basisV'],
-            params['innerRadius'],
-            params['outerRadius'],
-            params['thickness'],
-            angle,
-        )
-        sections.add(profile)
-
-    loft_feature = loft_features.add(loft_input)
-    if loft_feature.bodies.count < 1:
-        raise RuntimeError('Loft creation failed for this flight.')
-
-    return loft_feature.bodies.item(0)
-
-
-def _join_bodies(component: adsk.fusion.Component, target_body: adsk.fusion.BRepBody, tool_bodies):
-    if not tool_bodies:
-        return target_body
-
-    tools = adsk.core.ObjectCollection.create()
-    for body in tool_bodies:
-        tools.add(body)
-
-    combine_features = component.features.combineFeatures
-    combine_input = combine_features.createInput(target_body, tools)
-    combine_input.operation = adsk.fusion.FeatureOperations.JoinFeatureOperation
-    combine_input.isKeepToolBodies = False
-    combine_features.add(combine_input)
-    return target_body
 
 
 def _build_blades(params: dict):
@@ -398,8 +417,7 @@ def _build_blades(params: dict):
     flight_bodies = []
     for i in range(params['flights']):
         phase = params['startAngle'] + (2.0 * math.pi * i / params['flights'])
-        body = _create_single_flight(component, params, phase)
-        flight_bodies.append(body)
+        flight_bodies.append(_create_single_flight(component, params, phase))
 
     blade_body = flight_bodies[0]
     if len(flight_bodies) > 1:
@@ -425,7 +443,7 @@ def _update_derived_text(inputs: adsk.core.CommandInputs):
         text_input.text = (
             f"Hub radius: {_format_length(params['innerRadius'])}\n"
             f"Pitch: {_format_length(pitch)}\n"
-            f"Sections per flight: {params['stationCount']}"
+            f"Bucket wrap: {math.degrees(params['bucketWrap']):.1f} deg"
         )
     except Exception as ex:
         text_input.text = str(ex)
@@ -435,8 +453,7 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args: adsk.core.CommandEventArgs):
         try:
             command = args.firingEvent.sender
-            inputs = command.commandInputs
-            params = _get_validated_parameters(inputs)
+            params = _get_validated_parameters(command.commandInputs)
             _build_blades(params)
         except Exception:
             if UI:
@@ -447,13 +464,50 @@ class CommandPreviewHandler(adsk.core.CommandEventHandler):
     def notify(self, args: adsk.core.CommandEventArgs):
         try:
             command = args.firingEvent.sender
-            inputs = command.commandInputs
-            params = _get_validated_parameters(inputs, preview_mode=True)
+            params = _get_validated_parameters(command.commandInputs, preview_mode=True)
             _build_blades(params)
             args.isValidResult = True
         except Exception:
-            # Preview should fail quietly while the user is still selecting/editing inputs.
             args.isValidResult = False
+
+
+class InputChangedHandler(adsk.core.InputChangedEventHandler):
+    def notify(self, args: adsk.core.InputChangedEventArgs):
+        try:
+            changed = args.input
+            inputs = args.inputs
+
+            turns_input = adsk.core.FloatSpinnerCommandInput.cast(inputs.itemById(INPUT_TURNS))
+            turns_slider = adsk.core.FloatSliderCommandInput.cast(inputs.itemById(INPUT_TURNS_SLIDER))
+            bucket_input = adsk.core.FloatSpinnerCommandInput.cast(inputs.itemById(INPUT_BUCKET_WRAP))
+            bucket_slider = adsk.core.FloatSliderCommandInput.cast(inputs.itemById(INPUT_BUCKET_WRAP_SLIDER))
+
+            if changed and turns_input and turns_slider:
+                if changed.id == INPUT_TURNS_SLIDER:
+                    turns_input.value = turns_slider.valueOne
+                elif changed.id == INPUT_TURNS:
+                    if turns_input.value > turns_slider.maximumValue:
+                        turns_slider.maximumValue = turns_input.value
+                    turns_slider.valueOne = turns_input.value
+
+            if changed and bucket_input and bucket_slider:
+                if changed.id == INPUT_BUCKET_WRAP_SLIDER:
+                    bucket_input.value = bucket_slider.valueOne
+                elif changed.id == INPUT_BUCKET_WRAP:
+                    bucket_slider.valueOne = bucket_input.value
+
+            _update_derived_text(inputs)
+        except Exception:
+            pass
+
+
+class ValidateInputsHandler(adsk.core.ValidateInputsEventHandler):
+    def notify(self, args: adsk.core.ValidateInputsEventArgs):
+        try:
+            _get_validated_parameters(args.inputs)
+            args.areInputsValid = True
+        except Exception:
+            args.areInputsValid = False
 
 
 class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
@@ -468,7 +522,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             shaft_input = inputs.addSelectionInput(
                 INPUT_SHAFT_FACE,
                 'Shaft Cylindrical Face',
-                'Select the shaft cylindrical face',
+                'Select the shaft cylindrical face.',
             )
             shaft_input.addSelectionFilter('Faces')
             shaft_input.setSelectionLimits(1, 1)
@@ -485,17 +539,16 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 INPUT_OUTER_RADIUS,
                 'Outer Radius',
                 units,
-                adsk.core.ValueInput.createByString(f'5 {units}'),
+                adsk.core.ValueInput.createByString(f'80 mm'),
             )
             inputs.addValueInput(
                 INPUT_LENGTH,
                 'Blade Length',
                 units,
-                adsk.core.ValueInput.createByString(f'30 {units}'),
+                adsk.core.ValueInput.createByString(f'600 mm'),
             )
 
-            # Empty unit string means this is a unitless spinner (number of turns).
-            inputs.addFloatSpinnerCommandInput(INPUT_TURNS, 'Turns', '', 0.1, 200.0, 0.1, 3.0)
+            inputs.addFloatSpinnerCommandInput(INPUT_TURNS, 'Turns', '', 0.1, 200.0, 0.1, 3.5)
             turns_slider = inputs.addFloatSliderCommandInput(
                 INPUT_TURNS_SLIDER,
                 'Turns (drag)',
@@ -505,20 +558,33 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 False,
             )
             turns_slider.spinStep = 0.1
-            turns_slider.valueOne = 3.0
+            turns_slider.valueOne = 3.5
 
             inputs.addValueInput(
                 INPUT_THICKNESS,
                 'Blade Thickness',
                 units,
-                adsk.core.ValueInput.createByString(f'0.4 {units}'),
+                adsk.core.ValueInput.createByString('3 mm'),
             )
             inputs.addValueInput(
                 INPUT_CLEARANCE,
                 'Hub Clearance',
                 units,
-                adsk.core.ValueInput.createByString(f'0 {units}'),
+                adsk.core.ValueInput.createByString('2 mm'),
             )
+
+            inputs.addFloatSpinnerCommandInput(INPUT_BUCKET_WRAP, 'Bucket Wrap (deg)', '', 0.0, 120.0, 1.0, 35.0)
+            bucket_slider = inputs.addFloatSliderCommandInput(
+                INPUT_BUCKET_WRAP_SLIDER,
+                'Bucket Wrap (drag)',
+                '',
+                0.0,
+                120.0,
+                False,
+            )
+            bucket_slider.spinStep = 1.0
+            bucket_slider.valueOne = 35.0
+
             inputs.addValueInput(
                 INPUT_START_ANGLE,
                 'Start Angle',
@@ -535,7 +601,6 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             hand_input.listItems.add(HAND_LEFT, False, '')
 
             inputs.addIntegerSpinnerCommandInput(INPUT_FLIGHTS, 'Flights', 1, 6, 1, 1)
-            inputs.addIntegerSpinnerCommandInput(INPUT_SEGMENTS, 'Segments / Turn', 8, 300, 1, 24)
 
             operation_input = inputs.addDropDownCommandInput(
                 INPUT_OPERATION,
@@ -570,39 +635,9 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             _handlers.append(on_validate)
 
             _update_derived_text(inputs)
-
         except Exception:
             if UI:
                 UI.messageBox('Command creation failed:\n{}'.format(traceback.format_exc()))
-
-
-class InputChangedHandler(adsk.core.InputChangedEventHandler):
-    def notify(self, args: adsk.core.InputChangedEventArgs):
-        try:
-            changed = args.input
-            turns_input = adsk.core.FloatSpinnerCommandInput.cast(args.inputs.itemById(INPUT_TURNS))
-            turns_slider = adsk.core.FloatSliderCommandInput.cast(args.inputs.itemById(INPUT_TURNS_SLIDER))
-
-            if changed and turns_input and turns_slider:
-                if changed.id == INPUT_TURNS_SLIDER:
-                    turns_input.value = turns_slider.valueOne
-                elif changed.id == INPUT_TURNS:
-                    if turns_input.value > turns_slider.maximumValue:
-                        turns_slider.maximumValue = turns_input.value
-                    turns_slider.valueOne = turns_input.value
-
-            _update_derived_text(args.inputs)
-        except Exception:
-            pass
-
-
-class ValidateInputsHandler(adsk.core.ValidateInputsEventHandler):
-    def notify(self, args: adsk.core.ValidateInputsEventArgs):
-        try:
-            _get_validated_parameters(args.inputs)
-            args.areInputsValid = True
-        except Exception:
-            args.areInputsValid = False
 
 
 def run(context):
@@ -630,7 +665,6 @@ def run(context):
             control = panel.controls.addCommand(cmd_def)
             control.isPromoted = True
             control.isPromotedByDefault = True
-
     except Exception:
         if UI:
             UI.messageBox('Add-in start failed:\n{}'.format(traceback.format_exc()))
@@ -653,7 +687,6 @@ def stop(context):
             cmd_def.deleteMe()
 
         _handlers = []
-
     except Exception:
         if UI:
             UI.messageBox('Add-in stop failed:\n{}'.format(traceback.format_exc()))

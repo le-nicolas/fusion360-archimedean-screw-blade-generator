@@ -1,6 +1,6 @@
 # Archimedean Screw Blade Generator (Add-in)
 
-Fusion 360 add-in that creates configurable Archimedean screw turbine blades around an existing shaft.
+Fusion 360 add-in that creates configurable hydraulic Archimedean screw flights around an existing shaft.
 
 ## Install
 1. In Fusion 360 open `Utilities -> Add-Ins -> Scripts and Add-Ins`.
@@ -23,18 +23,19 @@ Fusion 360 add-in that creates configurable Archimedean screw turbine blades aro
 6. `Turns (drag)` slider
 7. `Blade Thickness`
 8. `Hub Clearance`
-9. `Start Angle`
-10. `Handedness`
-11. `Flights`
-12. `Segments / Turn`
+9. `Bucket Wrap (deg)` and drag slider
+10. `Start Angle`
+11. `Handedness`
+12. `Flights`
 13. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
 
 ## Notes
 - Only the shaft cylindrical face needs to be selected.
 - Start plane is auto-detected from planar shaft end faces connected to the selected cylinder.
 - Command supports live preview while you edit values.
+- `Bucket Wrap` controls how cupped the hydraulic bucket shape becomes.
 - If screw direction is opposite, switch `Handedness` or rotate `Start Angle`.
-- Higher `Segments / Turn` gives smoother blades but heavier features.
+- Geometry is built from helical guide wires + ruled surface + thicken for smoother, faster updates.
 
 ## Files
 - `ArchimedeanScrewBladeGenerator.py`: main add-in logic.

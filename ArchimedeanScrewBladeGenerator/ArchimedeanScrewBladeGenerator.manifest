@@ -6,7 +6,7 @@
   "description": {
     "": "Generates configurable Archimedean screw turbine blades around an existing shaft."
   },
-  "version": "2.1.0",
+  "version": "3.0.0",
   "runOnStartup": false,
   "supportedOS": "windows|mac",
   "editEnabled": true
