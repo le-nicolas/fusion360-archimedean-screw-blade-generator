@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "f0f0d2bc-86c6-4e49-bf7a-e67ac2fab710",
+  "author": "Codex",
+  "description": {
+    "": "Generates configurable Archimedean screw turbine blades around an existing shaft."
+  },
+  "version": "1.0.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
