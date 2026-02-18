@@ -9,13 +9,17 @@ This add-in exists so that part is no longer a manual sketch nightmare.
 
 ## What this add-in does
 - Builds configurable Archimedean screw blade geometry around an existing shaft.
-- Lets you select your shaft face and a start plane, then generate one or multiple flights.
+- Auto-detects the start plane from shaft end geometry, so you only select the shaft once.
+- Shows a live preview while editing.
+- Includes a draggable `Turns (drag)` slider for fast tuning.
 - Supports `New Body` or direct `Join` into your shaft.
 
 ## Configurable parameters
 - `Outer Radius`
 - `Blade Length`
 - `Turns`
+- `Turns (drag)` slider
+- `Start End` (auto-detected end-cap choice)
 - `Blade Thickness`
 - `Hub Clearance`
 - `Start Angle`

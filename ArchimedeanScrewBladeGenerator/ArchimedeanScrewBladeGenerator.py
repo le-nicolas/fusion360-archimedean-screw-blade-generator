@@ -16,10 +16,10 @@ PANEL_ID = 'SolidCreatePanel'
 RESOURCE_FOLDER = os.path.join(os.path.dirname(__file__), 'resources')
 
 INPUT_SHAFT_FACE = 'shaftFace'
-INPUT_START_PLANE = 'startPlane'
 INPUT_OUTER_RADIUS = 'outerRadius'
 INPUT_LENGTH = 'bladeLength'
 INPUT_TURNS = 'turns'
+INPUT_TURNS_SLIDER = 'turnsSlider'
 INPUT_THICKNESS = 'bladeThickness'
 INPUT_CLEARANCE = 'hubClearance'
 INPUT_START_ANGLE = 'startAngle'
@@ -27,12 +27,15 @@ INPUT_HANDEDNESS = 'handedness'
 INPUT_FLIGHTS = 'flights'
 INPUT_SEGMENTS = 'segmentsPerTurn'
 INPUT_OPERATION = 'operation'
+INPUT_START_END = 'startEnd'
 INPUT_DERIVED = 'derivedInfo'
 
 HAND_RIGHT = 'Right-handed'
 HAND_LEFT = 'Left-handed'
 OP_NEW_BODY = 'New Blade Body'
 OP_JOIN = 'Join Blade To Shaft'
+START_END_MIN = 'End 1 (auto)'
+START_END_MAX = 'End 2 (auto)'
 
 _handlers = []
 
@@ -63,25 +66,54 @@ def _selection_entity(inputs: adsk.core.CommandInputs, input_id: str):
     return selection_input.selection(0).entity
 
 
-def _planar_entity_info(entity):
-    if not entity:
-        return None, None, None
+def _axis_projection(origin: adsk.core.Point3D, axis: adsk.core.Vector3D, point: adsk.core.Point3D) -> float:
+    vec = adsk.core.Vector3D.create(point.x - origin.x, point.y - origin.y, point.z - origin.z)
+    return vec.dotProduct(axis)
 
-    if entity.objectType == adsk.fusion.BRepFace.classType():
-        face = adsk.fusion.BRepFace.cast(entity)
-        plane = adsk.core.Plane.cast(face.geometry)
-        if not plane:
-            return None, None, None
-        return face, plane, face.body.parentComponent
 
-    if entity.objectType == adsk.fusion.ConstructionPlane.classType():
-        plane_entity = adsk.fusion.ConstructionPlane.cast(entity)
-        plane = adsk.core.Plane.cast(plane_entity.geometry)
-        if not plane:
-            return None, None, None
-        return plane_entity, plane, plane_entity.parentComponent
+def _auto_detect_start_end_face(
+    shaft_face: adsk.fusion.BRepFace,
+    cylinder: adsk.core.Cylinder,
+    prefer_max_end: bool,
+):
+    axis = cylinder.axis.copy()
+    axis.normalize()
+    axis_origin = cylinder.origin
 
-    return None, None, None
+    candidate_faces = []
+    seen_temp_ids = set()
+    edges = shaft_face.edges
+    for edge in edges:
+        edge_faces = edge.faces
+        for i in range(edge_faces.count):
+            face = edge_faces.item(i)
+            if face == shaft_face:
+                continue
+            if face.tempId in seen_temp_ids:
+                continue
+
+            plane = adsk.core.Plane.cast(face.geometry)
+            if not plane:
+                continue
+
+            normal = plane.normal.copy()
+            normal.normalize()
+            if abs(normal.dotProduct(axis)) < 0.995:
+                continue
+
+            seen_temp_ids.add(face.tempId)
+            candidate_faces.append(face)
+
+    if not candidate_faces:
+        raise ValueError(
+            'Unable to auto-detect shaft end face. Make sure the shaft has planar end caps connected to the selected cylindrical face.'
+        )
+
+    selector = max if prefer_max_end else min
+    return selector(
+        candidate_faces,
+        key=lambda f: _axis_projection(axis_origin, axis, f.pointOnFace),
+    )
 
 
 def _get_validated_parameters(inputs: adsk.core.CommandInputs):
@@ -99,29 +131,11 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs):
     cylinder = adsk.core.Cylinder.cast(shaft_face.geometry)
     if not cylinder:
         raise ValueError('Selected shaft face must be cylindrical.')
-
-    start_entity = _selection_entity(inputs, INPUT_START_PLANE)
-    if not start_entity:
-        raise ValueError('Select a start plane or planar face.')
-
-    if hasattr(start_entity, 'assemblyContext') and start_entity.assemblyContext:
-        raise ValueError('Assembly occurrences are not supported. Select entities in their source component.')
-
-    start_planar_entity, start_plane, start_component = _planar_entity_info(start_entity)
-    if not start_planar_entity or not start_plane:
-        raise ValueError('Start selection must be a planar face or construction plane.')
-
     component = shaft_face.body.parentComponent
-    if component != start_component:
-        raise ValueError('Shaft face and start plane must belong to the same component.')
-
-    axis = cylinder.axis.copy()
-    axis.normalize()
-    normal = start_plane.normal.copy()
-    normal.normalize()
-
-    if abs(axis.dotProduct(normal)) < 0.995:
-        raise ValueError('Start plane must be normal to the shaft axis.')
+    start_end_input = adsk.core.DropDownCommandInput.cast(inputs.itemById(INPUT_START_END))
+    start_end_name = start_end_input.selectedItem.name if start_end_input and start_end_input.selectedItem else START_END_MIN
+    prefer_max_end = start_end_name == START_END_MAX
+    start_planar_entity = _auto_detect_start_end_face(shaft_face, cylinder, prefer_max_end)
 
     length_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_LENGTH))
     outer_input = adsk.core.ValueCommandInput.cast(inputs.itemById(INPUT_OUTER_RADIUS))
@@ -304,10 +318,8 @@ def _update_derived_text(inputs: adsk.core.CommandInputs):
         return
 
     shaft_entity = _selection_entity(inputs, INPUT_SHAFT_FACE)
-    start_entity = _selection_entity(inputs, INPUT_START_PLANE)
-
-    if not shaft_entity or not start_entity:
-        text_input.text = 'Select shaft + start plane to view derived values.'
+    if not shaft_entity:
+        text_input.text = 'Select shaft face to view derived values.'
         return
 
     try:
@@ -334,6 +346,19 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
                 UI.messageBox('Failed to create Archimedean blade:\n{}'.format(traceback.format_exc()))
 
 
+class CommandPreviewHandler(adsk.core.CommandEventHandler):
+    def notify(self, args: adsk.core.CommandEventArgs):
+        try:
+            command = args.firingEvent.sender
+            inputs = command.commandInputs
+            params = _get_validated_parameters(inputs)
+            _build_blades(params)
+            args.isValidResult = True
+        except Exception:
+            # Preview should fail quietly while the user is still selecting/editing inputs.
+            args.isValidResult = False
+
+
 class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
     def notify(self, args: adsk.core.CommandCreatedEventArgs):
         try:
@@ -351,14 +376,13 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             shaft_input.addSelectionFilter('Faces')
             shaft_input.setSelectionLimits(1, 1)
 
-            start_input = inputs.addSelectionInput(
-                INPUT_START_PLANE,
-                'Start Plane / Face',
-                'Select a planar face or construction plane normal to shaft axis',
+            start_end_input = inputs.addDropDownCommandInput(
+                INPUT_START_END,
+                'Start End',
+                adsk.core.DropDownStyles.TextListDropDownStyle,
             )
-            start_input.addSelectionFilter('PlanarFaces')
-            start_input.addSelectionFilter('ConstructionPlanes')
-            start_input.setSelectionLimits(1, 1)
+            start_end_input.listItems.add(START_END_MIN, True, '')
+            start_end_input.listItems.add(START_END_MAX, False, '')
 
             inputs.addValueInput(
                 INPUT_OUTER_RADIUS,
@@ -375,6 +399,16 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             # Empty unit string means this is a unitless spinner (number of turns).
             inputs.addFloatSpinnerCommandInput(INPUT_TURNS, 'Turns', '', 0.1, 200.0, 0.1, 3.0)
+            turns_slider = inputs.addFloatSliderCommandInput(
+                INPUT_TURNS_SLIDER,
+                'Turns (drag)',
+                '',
+                0.1,
+                20.0,
+                False,
+            )
+            turns_slider.spinStep = 0.1
+            turns_slider.valueOne = 3.0
 
             inputs.addValueInput(
                 INPUT_THICKNESS,
@@ -417,7 +451,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addTextBoxCommandInput(
                 INPUT_DERIVED,
                 'Derived',
-                'Select shaft + start plane to view derived values.',
+                'Select shaft face to view derived values.',
                 3,
                 True,
             )
@@ -425,6 +459,10 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             on_execute = CommandExecuteHandler()
             command.execute.add(on_execute)
             _handlers.append(on_execute)
+
+            on_preview = CommandPreviewHandler()
+            command.executePreview.add(on_preview)
+            _handlers.append(on_preview)
 
             on_input_changed = InputChangedHandler()
             command.inputChanged.add(on_input_changed)
@@ -444,6 +482,18 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 class InputChangedHandler(adsk.core.InputChangedEventHandler):
     def notify(self, args: adsk.core.InputChangedEventArgs):
         try:
+            changed = args.input
+            turns_input = adsk.core.FloatSpinnerCommandInput.cast(args.inputs.itemById(INPUT_TURNS))
+            turns_slider = adsk.core.FloatSliderCommandInput.cast(args.inputs.itemById(INPUT_TURNS_SLIDER))
+
+            if changed and turns_input and turns_slider:
+                if changed.id == INPUT_TURNS_SLIDER:
+                    turns_input.value = turns_slider.valueOne
+                elif changed.id == INPUT_TURNS:
+                    if turns_input.value > turns_slider.maximumValue:
+                        turns_slider.maximumValue = turns_input.value
+                    turns_slider.valueOne = turns_input.value
+
             _update_derived_text(args.inputs)
         except Exception:
             pass

@@ -16,20 +16,23 @@ Fusion 360 add-in that creates configurable Archimedean screw turbine blades aro
 
 ## Inputs
 1. `Shaft Cylindrical Face`
-2. `Start Plane / Face` (must be normal to shaft axis)
+2. `Start End` (auto-detected from shaft end caps)
 3. `Outer Radius`
 4. `Blade Length`
 5. `Turns`
-6. `Blade Thickness`
-7. `Hub Clearance`
-8. `Start Angle`
-9. `Handedness`
-10. `Flights`
-11. `Segments / Turn`
-12. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
+6. `Turns (drag)` slider
+7. `Blade Thickness`
+8. `Hub Clearance`
+9. `Start Angle`
+10. `Handedness`
+11. `Flights`
+12. `Segments / Turn`
+13. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
 
 ## Notes
-- Shaft and start references must be in the same component.
+- Only the shaft cylindrical face needs to be selected.
+- Start plane is auto-detected from planar shaft end faces connected to the selected cylinder.
+- Command supports live preview while you edit values.
 - If screw direction is opposite, switch `Handedness` or rotate `Start Angle`.
 - Higher `Segments / Turn` gives smoother blades but heavier features.
 
