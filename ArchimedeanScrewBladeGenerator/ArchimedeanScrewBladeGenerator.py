@@ -373,7 +373,8 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 adsk.core.ValueInput.createByString(f'30 {units}'),
             )
 
-            inputs.addFloatSpinnerCommandInput(INPUT_TURNS, 'Turns', 0.1, 200.0, 0.1, 3.0)
+            # Empty unit string means this is a unitless spinner (number of turns).
+            inputs.addFloatSpinnerCommandInput(INPUT_TURNS, 'Turns', '', 0.1, 200.0, 0.1, 3.0)
 
             inputs.addValueInput(
                 INPUT_THICKNESS,
