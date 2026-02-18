@@ -28,6 +28,7 @@ This add-in exists so that part is no longer a manual sketch nightmare.
 - `Blade Thickness`
 - `Hub Clearance`
 - `Bucket Wrap (deg)` + drag slider
+- `Blade Preset` (`1 Blade` / `2 Blades`)
 - `Start Angle`
 - `Handedness` (left/right)
 - `Flights` (multi-start screw)

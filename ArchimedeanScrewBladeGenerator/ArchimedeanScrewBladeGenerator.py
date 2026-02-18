@@ -27,6 +27,7 @@ INPUT_BUCKET_WRAP = 'bucketWrapDeg'
 INPUT_BUCKET_WRAP_SLIDER = 'bucketWrapSlider'
 INPUT_START_ANGLE = 'startAngle'
 INPUT_HANDEDNESS = 'handedness'
+INPUT_FLIGHT_PRESET = 'flightPreset'
 INPUT_FLIGHTS = 'flights'
 INPUT_OPERATION = 'operation'
 INPUT_DERIVED = 'derivedInfo'
@@ -37,6 +38,8 @@ OP_NEW_BODY = 'New Blade Body'
 OP_JOIN = 'Join Blade To Shaft'
 START_END_MIN = 'End 1 (auto)'
 START_END_MAX = 'End 2 (auto)'
+FLIGHT_PRESET_SINGLE = '1 Blade'
+FLIGHT_PRESET_DOUBLE = '2 Blades'
 
 _handlers = []
 
@@ -65,6 +68,14 @@ def _selection_entity(inputs: adsk.core.CommandInputs, input_id: str):
     if not selection_input or selection_input.selectionCount < 1:
         return None
     return selection_input.selection(0).entity
+
+
+def _select_dropdown_item(dropdown: adsk.core.DropDownCommandInput, item_name: str):
+    if not dropdown:
+        return
+    for i in range(dropdown.listItems.count):
+        item = dropdown.listItems.item(i)
+        item.isSelected = item.name == item_name
 
 
 def _axis_projection(origin: adsk.core.Point3D, axis: adsk.core.Vector3D, point: adsk.core.Point3D) -> float:
@@ -481,6 +492,8 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
             turns_slider = adsk.core.FloatSliderCommandInput.cast(inputs.itemById(INPUT_TURNS_SLIDER))
             bucket_input = adsk.core.FloatSpinnerCommandInput.cast(inputs.itemById(INPUT_BUCKET_WRAP))
             bucket_slider = adsk.core.FloatSliderCommandInput.cast(inputs.itemById(INPUT_BUCKET_WRAP_SLIDER))
+            flight_preset_input = adsk.core.DropDownCommandInput.cast(inputs.itemById(INPUT_FLIGHT_PRESET))
+            flights_input = adsk.core.IntegerSpinnerCommandInput.cast(inputs.itemById(INPUT_FLIGHTS))
 
             if changed and turns_input and turns_slider:
                 if changed.id == INPUT_TURNS_SLIDER:
@@ -495,6 +508,18 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
                     bucket_input.value = bucket_slider.valueOne
                 elif changed.id == INPUT_BUCKET_WRAP:
                     bucket_slider.valueOne = bucket_input.value
+
+            if changed and flight_preset_input and flights_input:
+                if changed.id == INPUT_FLIGHT_PRESET and flight_preset_input.selectedItem:
+                    if flight_preset_input.selectedItem.name == FLIGHT_PRESET_SINGLE:
+                        flights_input.value = 1
+                    elif flight_preset_input.selectedItem.name == FLIGHT_PRESET_DOUBLE:
+                        flights_input.value = 2
+                elif changed.id == INPUT_FLIGHTS:
+                    if flights_input.value == 1:
+                        _select_dropdown_item(flight_preset_input, FLIGHT_PRESET_SINGLE)
+                    elif flights_input.value == 2:
+                        _select_dropdown_item(flight_preset_input, FLIGHT_PRESET_DOUBLE)
 
             _update_derived_text(inputs)
         except Exception:
@@ -600,7 +625,15 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             hand_input.listItems.add(HAND_RIGHT, True, '')
             hand_input.listItems.add(HAND_LEFT, False, '')
 
-            inputs.addIntegerSpinnerCommandInput(INPUT_FLIGHTS, 'Flights', 1, 6, 1, 1)
+            flight_preset = inputs.addDropDownCommandInput(
+                INPUT_FLIGHT_PRESET,
+                'Blade Preset',
+                adsk.core.DropDownStyles.TextListDropDownStyle,
+            )
+            flight_preset.listItems.add(FLIGHT_PRESET_SINGLE, False, '')
+            flight_preset.listItems.add(FLIGHT_PRESET_DOUBLE, True, '')
+
+            inputs.addIntegerSpinnerCommandInput(INPUT_FLIGHTS, 'Flights', 1, 6, 1, 2)
 
             operation_input = inputs.addDropDownCommandInput(
                 INPUT_OPERATION,

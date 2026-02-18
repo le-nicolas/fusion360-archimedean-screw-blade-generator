@@ -26,14 +26,16 @@ Fusion 360 add-in that creates configurable hydraulic Archimedean screw flights 
 9. `Bucket Wrap (deg)` and drag slider
 10. `Start Angle`
 11. `Handedness`
-12. `Flights`
-13. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
+12. `Blade Preset` (`1 Blade` / `2 Blades`)
+13. `Flights`
+14. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
 
 ## Notes
 - Only the shaft cylindrical face needs to be selected.
 - Start plane is auto-detected from planar shaft end faces connected to the selected cylinder.
 - Command supports live preview while you edit values.
 - `Bucket Wrap` controls how cupped the hydraulic bucket shape becomes.
+- `Blade Preset` gives a quick one-click switch between single and double blade.
 - If screw direction is opposite, switch `Handedness` or rotate `Start Angle`.
 - Geometry is built from helical guide wires + ruled surface + thicken for smoother, faster updates.
 
