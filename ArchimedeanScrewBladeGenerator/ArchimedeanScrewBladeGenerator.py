@@ -246,7 +246,7 @@ def _get_validated_parameters(inputs: adsk.core.CommandInputs, preview_mode: boo
     join_to_shaft = operation_name == OP_JOIN
 
     station_count = max(2, int(math.ceil(turns * segments_per_turn)) + 1)
-    preview_segment_cap = 8
+    preview_segment_cap = 3
     preview_flights = flights
     if preview_mode:
         preview_station_count = max(2, int(math.ceil(turns * min(segments_per_turn, preview_segment_cap))) + 1)
@@ -320,11 +320,18 @@ def _add_profile_section(
     p3 = _point_offset(outer_center, tangential, -half_t)
     p4 = _point_offset(inner_center, tangential, -half_t)
 
+    # Sketch lines require sketch-space coordinates; using model-space points directly
+    # distorts profiles when the sketch plane is not aligned to world axes.
+    p1s = sketch.modelToSketchSpace(p1)
+    p2s = sketch.modelToSketchSpace(p2)
+    p3s = sketch.modelToSketchSpace(p3)
+    p4s = sketch.modelToSketchSpace(p4)
+
     lines = sketch.sketchCurves.sketchLines
-    lines.addByTwoPoints(p1, p2)
-    lines.addByTwoPoints(p2, p3)
-    lines.addByTwoPoints(p3, p4)
-    lines.addByTwoPoints(p4, p1)
+    lines.addByTwoPoints(p1s, p2s)
+    lines.addByTwoPoints(p2s, p3s)
+    lines.addByTwoPoints(p3s, p4s)
+    lines.addByTwoPoints(p4s, p1s)
 
     if sketch.profiles.count < 1:
         raise RuntimeError('Failed to create section profile. Try increasing blade thickness.')
