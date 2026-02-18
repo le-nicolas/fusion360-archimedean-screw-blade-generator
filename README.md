@@ -8,6 +8,10 @@ Then I got stuck on the blade, because the blade is the math-heavy part of an Ar
 This add-in exists so that part is no longer a manual sketch nightmare.
 
 ## What this add-in does
+
+<img width="1275" height="884" alt="image" src="https://github.com/user-attachments/assets/0465abd4-b521-4c88-b504-b4648143ab98" />
+
+
 - Builds configurable hydraulic Archimedean screw flight geometry around an existing shaft.
 - Auto-detects the start plane from shaft end geometry, so you only select the shaft once.
 - Shows a live preview while editing.
