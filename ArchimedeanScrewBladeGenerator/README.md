@@ -17,27 +17,29 @@ Fusion 360 add-in that creates configurable hydraulic Archimedean screw flights 
 ## Inputs
 1. `Shaft Cylindrical Face`
 2. `Start End` (auto-detected from shaft end caps)
-3. `Outer Radius`
-4. `Blade Length`
-5. `Turns`
-6. `Turns (drag)` slider
-7. `Blade Thickness`
-8. `Hub Clearance`
-9. `Bucket Wrap (deg)` and drag slider
-10. `Start Angle`
-11. `Handedness`
-12. `Blade Preset` (`1 Blade` / `2 Blades`)
-13. `Flights`
-14. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
+3. `Outer Radius` (auto-suggested from selected shaft)
+4. `Hub Clearance`
+5. `Pitch Mode`
+6. `Blade Length` (constant mode) or `Pitch Start` + `Pitch End` (variable mode)
+7. `Turns` + `Turns (drag)` slider
+8. `Bucket Wrap (deg)` + drag slider
+9. `Hub Thickness`
+10. `Thickness Mode` + optional `Tip Thickness`
+11. `Start Angle`
+12. `Handedness`
+13. `Blade Preset` (`1/2/3/4/Custom`)
+14. `Flights`
+15. `Operation` (`New Blade Body` / `Join Blade To Shaft`)
+16. `RPM` for engineering feedback
+17. `Saved Preset`, `Preset Name`, and `Save Preset` button
 
 ## Notes
-- Only the shaft cylindrical face needs to be selected.
-- Start plane is auto-detected from planar shaft end faces connected to the selected cylinder.
-- Command supports live preview while you edit values.
-- `Bucket Wrap` controls how cupped the hydraulic bucket shape becomes.
-- `Blade Preset` gives a quick one-click switch between single and double blade.
-- If screw direction is opposite, switch `Handedness` or rotate `Start Angle`.
-- Geometry is built from helical guide wires + ruled surface + thicken for smoother, faster updates.
+- Command includes strict validation with readable messages for invalid geometric combinations.
+- Variable pitch mode builds a segmented tapered helix path between `Pitch Start` and `Pitch End`.
+- Tapered thickness mode approximates thicker-at-hub and thinner-at-tip flights by radial banding.
+- Derived panel shows helix angle, pitch ratio, and theoretical/estimated flow at the set `RPM`.
+- User presets are saved to `presets.json` next to the add-in script and can be team-shared.
+- Generated timeline features and bodies are named to make edits in parametric history easier.
 
 ## Files
 - `ArchimedeanScrewBladeGenerator.py`: main add-in logic.
