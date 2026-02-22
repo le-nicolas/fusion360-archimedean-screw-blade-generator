@@ -1,0 +1,28 @@
+{
+  "presets": [
+    {
+      "data": {
+        "bladeLength": 200.0,
+        "bladeThickness": 0.30000000000000004,
+        "bucketWrapDeg": 35.0,
+        "flightPreset": "2 Blades",
+        "flights": 2,
+        "handedness": "Right-handed",
+        "hubClearance": 0.2,
+        "operation": "New Blade Body",
+        "outerRadius": 1.2999994000000001,
+        "pitchEnd": 10.0,
+        "pitchMode": "Variable pitch (taper)",
+        "pitchStart": 10.0,
+        "rpm": 70.0,
+        "startAngle": 0.3839724354387525,
+        "startEnd": "End 1 (auto)",
+        "thicknessMode": "Constant thickness",
+        "tipThickness": 0.2,
+        "turns": 20.0
+      },
+      "name": "archimedean"
+    }
+  ],
+  "version": 1
+}

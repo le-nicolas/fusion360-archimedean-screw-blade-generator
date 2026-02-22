@@ -539,17 +539,31 @@ def _detect_helix_sign_mode(
 ):
     global _HELIX_SIGN_MODE
 
-    if temp_mgr.createHelixWire(axis_point, axis_vector, start_point, pitch, -1.0, 0.0):
+    def _try_helix(p: float, t: float, axis: Optional[adsk.core.Vector3D] = None) -> bool:
+        try:
+            wire_body = temp_mgr.createHelixWire(
+                axis_point,
+                axis if axis else axis_vector,
+                start_point,
+                p,
+                t,
+                0.0,
+            )
+            return bool(wire_body)
+        except RuntimeError:
+            return False
+
+    if _try_helix(pitch, -1.0):
         _HELIX_SIGN_MODE = 'turns_sign'
         return
 
-    if temp_mgr.createHelixWire(axis_point, axis_vector, start_point, -pitch, 1.0, 0.0):
+    if _try_helix(-pitch, 1.0):
         _HELIX_SIGN_MODE = 'pitch_sign'
         return
 
     flipped = axis_vector.copy()
     flipped.scaleBy(-1.0)
-    if temp_mgr.createHelixWire(axis_point, flipped, start_point, pitch, 1.0, 0.0):
+    if _try_helix(pitch, 1.0, flipped):
         _HELIX_SIGN_MODE = 'flip_axis'
         return
 
